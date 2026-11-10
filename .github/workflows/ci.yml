@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang clang-format clang-tidy
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+      - name: Repository hygiene
+        run: bash scripts/check_hygiene.sh
+      - name: Verification matrix (format, static analysis, tests, sanitizers, reproducibility)
+        run: bash scripts/ci.sh
+
+  minimum-cmake:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the minimum supported CMake series
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cmake-minimum"
+          "$RUNNER_TEMP/cmake-minimum/bin/python" -m pip install cmake==3.21.4
+          echo "$RUNNER_TEMP/cmake-minimum/bin" >> "$GITHUB_PATH"
+      - name: Build, test and verify installation
+        run: |
+          cmake --version
+          cmake -S . -B build/minimum -DCMAKE_BUILD_TYPE=Release -DMAGIC_PORTAL_WARNINGS_AS_ERRORS=ON
+          cmake --build build/minimum --parallel 2
+          ctest --test-dir build/minimum --output-on-failure
+
+  android-arm64:
+    # Cross-compiles the library and C interface for Android. It cannot run device tests.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure and build with the NDK
+        run: |
+          cmake -S . -B build/android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release -DMAGIC_PORTAL_WARNINGS_AS_ERRORS=ON \
+            -DMAGIC_PORTAL_BUILD_TESTS=OFF -DMAGIC_PORTAL_BUILD_TOOLS=OFF -DMAGIC_PORTAL_BUILD_SHARED=ON
+          cmake --build build/android

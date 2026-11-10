@@ -1,0 +1,7 @@
+/* Linux/Android: a shared build exports only the C interface. */
+{
+  global:
+    mp_*;
+  local:
+    *;
+};

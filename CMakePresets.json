@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "MAGIC_PORTAL_WARNINGS_AS_ERRORS": "ON" }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release (tests, tools)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "debug-asan-ubsan",
+      "inherits": "base",
+      "displayName": "Debug + AddressSanitizer + UBSan",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "MAGIC_PORTAL_SANITIZE": "address;undefined" }
+    },
+    {
+      "name": "debug-tsan",
+      "inherits": "base",
+      "displayName": "Debug + ThreadSanitizer",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "MAGIC_PORTAL_SANITIZE": "thread" }
+    },
+    {
+      "name": "shared",
+      "inherits": "base",
+      "displayName": "Release, shared library (C interface only)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "MAGIC_PORTAL_BUILD_SHARED": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release" },
+    { "name": "debug-asan-ubsan", "configurePreset": "debug-asan-ubsan" },
+    { "name": "debug-tsan", "configurePreset": "debug-tsan" },
+    { "name": "shared", "configurePreset": "shared" }
+  ],
+  "testPresets": [
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+    { "name": "debug-asan-ubsan", "configurePreset": "debug-asan-ubsan", "output": { "outputOnFailure": true } },
+    { "name": "debug-tsan", "configurePreset": "debug-tsan", "output": { "outputOnFailure": true } },
+    { "name": "shared", "configurePreset": "shared", "output": { "outputOnFailure": true } }
+  ]
+}
