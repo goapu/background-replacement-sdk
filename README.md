@@ -1,101 +1,155 @@
-# Magic Portal SDK
+# Background Replacement SDK
 
-A portable C++17 core for a "magic portal" background-replacement effect on a live camera
-feed: the person is cut out with a segmentation model, a swirling portal opens around them,
-and a new background is revealed behind them. The person's own pixels are never recolored
-or regenerated; only the soft edge is blended.
+[![CI](https://github.com/goapu/background-replacement-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/goapu/background-replacement-sdk/actions/workflows/ci.yml)
 
-```text
-camera frame ──► Engine::process_frame  (worker thread)
-                   copy/mirror → segment (TFLite or caller-supplied mask)
-                   → refine (close holes, edge-aware filter, temporal filter)
-                   → publish mask + bounds
-                                              │
-render thread:  Engine::render_state(now) ◄───┘   fresh mask? phase? uniforms?
-                   │
-                   ├─► GPU:  generated GLSL fragment modifier (Viro adapter)
-                   └─► CPU:  PortalCompositor reference renderer (tests, previews)
-```
+A C++17 SDK for camera background replacement using person segmentation, mask refinement,
+and configurable portal transitions.
 
-## What is in the box
+The SDK processes camera frames and publishes the masks and transition state needed by a
+renderer. Applications provide camera capture, background images, and rendering resources.
+The CMake package, headers, and C++ namespace use the name `magic_portal`; C functions use
+the `mp_` prefix.
 
-| Piece | Where | Notes |
-|---|---|---|
-| Stable C interface | `include/magic_portal/magic_portal.h` | Opaque handle, status codes, versioned structs, no exceptions across the boundary. Use this from Kotlin/JNI, Swift, or any FFI. |
-| C++ engine | `include/magic_portal/engine.h` | Thread-safe hand-off between a worker and the render thread; fail-safe to the plain camera. |
-| Mask refinement | `mask_refiner.h` | Morphology, camera-guided bilateral filter, frame-rate-independent temporal filter. |
-| Transition logic | `portal_controller.h`, `portal_timeline.h` | Explicit state machine: live → transitioning → replaced. |
-| Shader | `portal_shader.h` | GLSL is generated from the same constants table as the CPU renderer. |
-| CPU reference | `portal_compositor.h` | Dependency-free renderer used for tests and previews. |
-| TFLite backend | `tflite_person_segmenter.h` | Optional (`MAGIC_PORTAL_WITH_TFLITE`). Model from file or memory, uint8/int8/float32, multiclass outputs. |
-| Android adapter | `adapters/viro/` | ViroCore integration over the engine. |
+## Features
+
+- C++ engine and a versioned C API for native applications and language bindings.
+- Application-provided confidence masks or an optional TensorFlow Lite segmentation backend.
+- Morphological closing, camera-guided bilateral filtering, and temporal mask smoothing.
+- Configurable transitions, a generated GLSL ES 3.00 fragment modifier, and a CPU reference renderer.
+- An optional worker-thread runner and an Android ViroCore adapter.
+- Mask freshness checks, session-aware resets, and camera fallback when the effect cannot run.
+
+## Requirements
+
+- CMake 3.21 or later.
+- A compiler with C++17 support.
+- Ninja is optional.
+
+The default build has no third-party runtime dependencies. TensorFlow Lite and ViroCore are
+optional integrations and are not bundled. No segmentation model is included.
 
 ## Build and test
 
 ```bash
-cmake --preset release            # or: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build --preset release
+git clone https://github.com/goapu/background-replacement-sdk.git
+cd background-replacement-sdk
+
+cmake --preset release
+cmake --build --preset release --parallel
 ctest --preset release
-scripts/ci.sh                     # the full matrix: gcc, clang, ASan/UBSan, TSan, shared, reproducibility
 ```
 
-See [docs/BUILD.md](docs/BUILD.md) for options, sanitizers, TFLite, Android, and installing the
-package for `find_package(magic_portal)`.
+This builds the static library, development tools, and tests. TensorFlow Lite inference is
+disabled by default; the engine can accept masks from another segmentation system.
 
-## Minimal use (C)
+Additional presets are available for `debug-asan-ubsan`, `debug-tsan`, and `shared` builds.
+See the [build guide](docs/BUILD.md) for configuration options and platform requirements.
+
+## Use with CMake
+
+Install the Release build to a local prefix:
+
+```bash
+cmake --install build/release --prefix "$PWD/build/install"
+```
+
+Set the consuming project's `CMAKE_PREFIX_PATH` to that installation directory, then link
+the exported target:
+
+```cmake
+find_package(magic_portal 0.2 CONFIG REQUIRED)
+target_link_libraries(app PRIVATE magic_portal::magic_portal)
+```
+
+Static linking requires C++ support in the consuming project, including for C applications.
+The C++ API requires the matching SDK version; shared builds export the C API only.
+
+## Integration
+
+The following helper creates an engine configured to accept application-provided masks:
 
 ```c
+#include <stdio.h>
 #include "magic_portal/magic_portal.h"
 
-mp_engine_config config;
-mp_engine_config_init(&config);
-config.model_path = "selfie_segmenter.tflite";      /* needs a TFLite build */
+mp_engine *create_engine(void) {
+    mp_engine_config config;
+    MP_ENGINE_CONFIG_INIT(&config);
 
-char error[256];
-mp_engine *engine = NULL;
-if (mp_engine_create(&config, &engine, error, sizeof error) != MP_OK) { /* report error */ }
-
-/* worker thread, ~15 times per second */
-mp_engine_process_frame(engine, &frame, NULL);
-
-/* render thread, every frame */
-mp_render_state state = {0};
-state.struct_size = sizeof state;
-mp_engine_get_render_state(engine, now_ms, &state);
+    mp_engine *engine = NULL;
+    char error[256] = {0};
+    mp_status status = mp_engine_create(&config, &engine, error, sizeof error);
+    if (status != MP_OK) {
+        fprintf(stderr, "Engine initialization failed: %s\n", error);
+        return NULL;
+    }
+    return engine;
+}
 ```
 
-The complete reference, including threading and versioning rules, is in
-[docs/C_API.md](docs/C_API.md).
+The application then drives the engine:
 
-## Behaviour you can rely on
+1. On a worker thread, pass each camera frame and raw confidence mask to
+   `mp_engine_process_frame`.
+2. Once a fresh mask is available, call `mp_engine_begin_transition` with an application-assigned
+   background ID.
+3. On the render thread, call `mp_engine_get_render_state` and apply its mask and shader
+   uniforms. Draw the camera unchanged when `effect_enable` is zero.
+4. After processing and rendering have stopped, release the engine with `mp_engine_destroy`.
 
-- **Fails safe.** The effect runs only over a recent mask (default: younger than 500 ms).
-  When segmentation stalls or fails, the unmodified camera is shown; a stale cut-out is
-  never held on screen.
-- **Starts only with a mask.** A transition cannot begin until a fresh mask exists.
-- **No hidden threads in the engine.** `Engine` is driven by the caller; `PortalRunner`
-  (used by the Android adapter) adds the worker thread and drops frames rather than queueing
-  them.
-- **Deterministic.** Time is passed in explicitly; given the same inputs the engine produces
-  the same output. Golden files guard the numerics, and the effect's noise is an integer hash
-  that is bit-identical on the CPU and in GLSL.
+Frames use display-oriented RGBA8 pixels. Masks contain floating-point confidence values in
+`[0, 1]`. Capture and render timestamps must use the same monotonic clock.
+Negative status codes indicate errors; `MP_NO_PERSON` indicates a successful frame with no
+detected person.
 
-## Status
+`Engine` is caller-driven; `PortalRunner` provides optional worker scheduling. Masks older
+than the configured limit, 500 ms by default, disable the effect. Inference failures retain
+the previous mask until it expires. An empty scene is a valid segmentation result.
 
-Read [docs/LAUNCH_READINESS.md](docs/LAUNCH_READINESS.md) before shipping. It separates what
-is verified by the test suite from what can only be validated on real devices, with a real
-model, and against the real ViroCore (the shader on phone GPUs, the ViroCore signatures, the
-TFLite runtime, measured performance, and iOS are not covered by the automated tests). The
-shader itself is checked against the CPU reference on desktop GPUs with `tools/shader_parity`.
+See the [C API reference](docs/C_API.md) for struct initialization, buffer ownership,
+threading, session IDs, and rendering conventions.
 
-## Repository layout
+## TensorFlow Lite backend
 
-```text
-include/magic_portal/   public headers (C and C++)
-src/                    implementation
-adapters/viro/          Android ViroCore adapter and integration guide
-tests/                  unit, golden, C, adapter and packaging tests (+ test doubles)
-tools/                  demo renderer, benchmark, mask-quality evaluation, shader parity check (GPU vs CPU)
-docs/                   architecture, build, C API, device validation, launch readiness
-scripts/                ci.sh (verification matrix), check_hygiene.sh, format.sh
+Build with `MAGIC_PORTAL_WITH_TFLITE=ON` and set `TFLITE_INCLUDE_DIR` and `TFLITE_LIBRARY`.
+Configure a model file or memory buffer before engine creation, then pass `NULL` as the raw
+mask to `mp_engine_process_frame`.
+
+The backend supports float32, uint8, and int8 tensors. Models must expose one RGB or RGBA
+image input in NHWC or HWC layout; only the first output tensor is read. Input normalization,
+class indices, and logits handling must match the model. See the
+[TFLite build instructions](docs/BUILD.md#tensorflow-lite--litert).
+
+## Validation and project status
+
+Run the local verification matrix with:
+
+```bash
+bash scripts/ci.sh
 ```
+
+The matrix checks formatting, static analysis, sanitizers, regression tests, installation,
+Linux shared-library exports, and reproducibility. Unavailable tools are reported as skipped.
+GitHub Actions also cross-compiles Android ARM64 and verifies CMake 3.21.4 compatibility.
+
+This is a development SDK. Automated TFLite and ViroCore tests use test doubles; model
+accuracy, phone GPU rendering, performance, and lifecycle behavior need device validation.
+Android JNI/Kotlin/AAR packaging and iOS capture and rendering bridges are not included.
+
+See [launch readiness](docs/LAUNCH_READINESS.md) and the
+[device validation plan](docs/DEVICE_VALIDATION.md) for the remaining release work.
+
+## Documentation
+
+| Reference | Content |
+|---|---|
+| [Architecture](docs/ARCHITECTURE.md) | Processing stages, threading, state, and coordinate conventions |
+| [Build guide](docs/BUILD.md) | Build options, sanitizers, dependencies, installation, and Android builds |
+| [C API](docs/C_API.md) | Lifecycle, status codes, ABI versioning, and rendering contract |
+| [Android integration](adapters/viro/ANDROID_INTEGRATION.md) | ViroCore adapter setup and lifecycle |
+| [Shader parity](tools/shader_parity/README.md) | Comparing GPU output with the CPU reference |
+
+## License
+
+A project license file has not yet been added. Optional runtime and model dependencies are
+listed in [third-party notices](THIRD_PARTY_NOTICES.md).
