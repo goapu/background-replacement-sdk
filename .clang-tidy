@@ -1,0 +1,18 @@
+# bugprone-empty-catch is disabled on purpose: the only empty handlers are inside
+# noexcept boundaries (C API, destructors, cleanup after a failure) where no further error
+# can be reported. Each one carries a comment saying so.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-empty-catch,
+  clang-analyzer-*,
+  performance-*,
+  -performance-avoid-endl,
+  -performance-enum-size,
+  readability-misleading-indentation,
+  misc-redundant-expression,
+  misc-misplaced-const
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/magic_portal/.*'

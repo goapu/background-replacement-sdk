@@ -1,0 +1,24 @@
+# Build output
+/build/
+/out/
+/cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+
+# Local tooling
+.vscode/
+.idea/
+.cache/
+*.swp
+.DS_Store
+
+# Output of tools/shader_parity (deterministic, about 5 MB)
+/tools/shader_parity/fixtures.json
+
+# Generated media and scratch (never commit footage or personal photos)
+*.ppm
+*.pgm
+*.mp4
+*.mov
+*.log
+!tests/golden/*.bin
