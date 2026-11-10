@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magic Portal shader parity</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f8; --panel: #ffffff; --fg: #16191d; --muted: #5c6670; --line: #d9dee3;
+  --pass: #17794a; --pass-bg: #e3f3ea; --warn: #8a5a00; --warn-bg: #fbefd2;
+  --fail: #b3261e; --fail-bg: #fbe3e1; --accent: #2456c8;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1215; --panel: #171b20; --fg: #e6e9ec; --muted: #9aa4ad; --line: #2a3138;
+    --pass: #5ccf93; --pass-bg: #12301f; --warn: #e6b450; --warn-bg: #36290c;
+    --fail: #ff8a80; --fail-bg: #3a1714; --accent: #7ea6ff;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 20px max(16px, env(safe-area-inset-right, 0px)) 40px max(16px, env(safe-area-inset-left, 0px)); }
+main { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+h1 { font-size: 22px; line-height: 1.2; margin: 0 0 4px; }
+h2 { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+p { margin: 0; }
+.sub, .note { color: var(--muted); }
+.note { font-size: 12.5px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; min-width: 0; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.verdict { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.chip { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.chip.pass { color: var(--pass); background: var(--pass-bg); }
+.chip.warn { color: var(--warn); background: var(--warn-bg); }
+.chip.fail { color: var(--fail); background: var(--fail-bg); }
+.chip.idle { color: var(--muted); background: var(--line); }
+.big { font-size: 15px; font-weight: 600; }
+.run { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+.run:first-child { border-top: 0; }
+.run .meta { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.run .name { font-weight: 600; overflow-wrap: anywhere; }
+.run .nums { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.thumbs { display: flex; gap: 6px; }
+.thumbs figure { margin: 0; display: flex; flex-direction: column; gap: 2px; align-items: center; }
+.thumbs figcaption { font-size: 10.5px; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+canvas.t { width: 72px; height: 96px; border: 1px solid var(--line); border-radius: 3px; image-rendering: pixelated; background: #000; }
+pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; max-height: 260px; overflow: auto; }
+details > summary { cursor: pointer; color: var(--accent); }
+button, input[type=file] { font: inherit; }
+button { border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Magic Portal shader parity</h1>
+    <p class="sub">Compiles the portal fragment shader that the SDK emits, runs it on this device's GPU through WebGL2, and compares every frame with the SDK's CPU reference rendered from the same engine state.</p>
+  </header>
+
+  <section class="panel" aria-live="polite">
+    <h2>Result</h2>
+    <div class="verdict"><span id="overall" class="chip idle">Waiting</span><span id="overallText" class="big">Loading fixtures</span></div>
+    <div class="actions" id="actions" hidden>
+      <button id="copy" type="button">Copy result JSON</button>
+      <button id="download" type="button">Download result JSON</button>
+    </div>
+    <p class="note" id="status" style="margin-top:8px"></p>
+    <div id="picker" hidden style="margin-top:10px">
+      <p class="note">The page could not fetch fixtures.json (opened from a file, or not generated yet). Choose the file instead:</p>
+      <input type="file" id="file" accept=".json,application/json">
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Graphics device</h2>
+    <dl class="kv mono" id="gpuInfo"><dt>status</dt><dd>waiting</dd></dl>
+  </section>
+
+  <section class="panel">
+    <h2>Shader compilation</h2>
+    <div class="verdict"><span id="compileChip" class="chip idle">Not compiled</span><span id="compileText" class="note"></span></div>
+    <details style="margin-top:8px"><summary>Compiler log</summary><pre id="compileLog">(empty)</pre></details>
+  </section>
+
+  <section class="panel">
+    <h2>Noise hash (must match exactly)</h2>
+    <p class="note" style="margin-bottom:6px">Evaluates the effect's integer hash for a grid of cells on the GPU and compares every cell with the CPU value bit for bit.</p>
+    <div id="probe"><p class="note">Waiting</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>Frames, GPU against CPU reference</h2>
+    <p class="note" style="margin-bottom:6px">Thumbnails: CPU reference, GPU output, difference (amplified 4x). Pass: mean error up to 2.5 of 255 and under 1.5% of pixels differing by more than 24. Warn: mean error up to 6 and under 5%. Anything worse fails.</p>
+    <div id="rows"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Raw result</h2>
+    <details><summary>Show JSON</summary><pre id="raw">(not ready)</pre></details>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var LIMITS = { passMae: 2.5, passBad: 0.015, warnMae: 6, warnBad: 0.05 };
+  var $ = function (id) { return document.getElementById(id); };
+
+  function b64(s) {
+    var bin = atob(s), n = bin.length, out = new Uint8Array(n);
+    for (var i = 0; i < n; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function setOverall(kind, label, text) {
+    $("overall").className = "chip " + kind;
+    $("overall").textContent = label;
+    $("overallText").textContent = text;
+  }
+  function kv(el, pairs) {
+    el.textContent = "";
+    pairs.forEach(function (p) {
+      var dt = document.createElement("dt"), dd = document.createElement("dd");
+      dt.textContent = p[0]; dd.textContent = p[1];
+      el.appendChild(dt); el.appendChild(dd);
+    });
+  }
+
+  var VERT = "#version 300 es\nvoid main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
+
+  // Uniform lines become globals and the rest runs inside main(), as a shader-modifier host does.
+  // The host supplies the precision statements and the output variable.
+  function buildFragment(lines) {
+    var globals = [], body = [];
+    lines.forEach(function (l) { (/^\s*uniform\b/.test(l) ? globals : body).push(l); });
+    return "#version 300 es\nprecision highp float;\nprecision highp int;\n" + globals.join("\n") +
+      "\nout vec4 _output_color;\nvoid main() {\n" + body.join("\n") + "\n}\n";
+  }
+  function compile(gl, type, src) {
+    var sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    return { sh: sh, ok: !!gl.getShaderParameter(sh, gl.COMPILE_STATUS), log: gl.getShaderInfoLog(sh) || "" };
+  }
+  function makeProgram(gl, fragSrc) {
+    var vs = compile(gl, gl.VERTEX_SHADER, VERT), fs = compile(gl, gl.FRAGMENT_SHADER, fragSrc);
+    var program = gl.createProgram(), linked = false, linkLog = "";
+    if (vs.ok && fs.ok) {
+      gl.attachShader(program, vs.sh); gl.attachShader(program, fs.sh);
+      gl.linkProgram(program);
+      linked = !!gl.getProgramParameter(program, gl.LINK_STATUS);
+      linkLog = gl.getProgramInfoLog(program) || "";
+    }
+    var log = "vertex: " + (vs.ok ? "ok" : "FAILED") + "\n" + vs.log + "\nfragment: " + (fs.ok ? "ok" : "FAILED") + "\n" + fs.log +
+      "\nlink: " + (linked ? "ok" : "FAILED") + "\n" + linkLog;
+    if (!fs.ok) {
+      log += "\n\n--- fragment source ---\n" + fragSrc.split("\n").map(function (l, i) { return (i + 1) + ": " + l; }).join("\n");
+    }
+    return { program: program, ok: vs.ok && fs.ok && linked, log: log };
+  }
+  function tex2d(gl, unit, internal, w, h, format, type, data, linear, flipY) {
+    var t = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, !!flipY);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, data);
+    var f = linear ? gl.LINEAR : gl.NEAREST;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    return t;
+  }
+
+  function stats(a, b, n) {
+    var sum = 0, max = 0, over8 = 0, over24 = 0, hist = new Uint32Array(256);
+    for (var i = 0; i < n; i++) {
+      var o = i * 4;
+      var d0 = Math.abs(a[o] - b[o]), d1 = Math.abs(a[o + 1] - b[o + 1]), d2 = Math.abs(a[o + 2] - b[o + 2]);
+      sum += d0 + d1 + d2;
+      var m = Math.max(d0, d1, d2);
+      hist[m]++;
+      if (m > max) max = m;
+      if (m > 8) over8++;
+      if (m > 24) over24++;
+    }
+    var target = Math.ceil(n * 0.99), acc = 0, p99 = 0;
+    for (var k = 0; k < 256; k++) { acc += hist[k]; if (acc >= target) { p99 = k; break; } }
+    return { mae: sum / (n * 3), p99: p99, max: max, over8: over8 / n, over24: over24 / n };
+  }
+  function grade(s) {
+    if (s.mae <= LIMITS.passMae && s.over24 <= LIMITS.passBad) return "pass";
+    if (s.mae <= LIMITS.warnMae && s.over24 <= LIMITS.warnBad) return "warn";
+    return "fail";
+  }
+  function flipRows(src, w, h) {
+    var out = new Uint8Array(src.length), row = w * 4;
+    for (var y = 0; y < h; y++) out.set(src.subarray((h - 1 - y) * row, (h - y) * row), y * row);
+    return out;
+  }
+  function thumb(w, h, rgba) {
+    var c = document.createElement("canvas");
+    c.width = w; c.height = h; c.className = "t";
+    var ctx = c.getContext("2d"), img = ctx.createImageData(w, h);
+    img.data.set(rgba);
+    for (var i = 3; i < img.data.length; i += 4) img.data[i] = 255;
+    ctx.putImageData(img, 0, 0);
+    return c;
+  }
+  function diffImage(a, b, n) {
+    var out = new Uint8Array(n * 4);
+    for (var i = 0; i < n; i++) {
+      var o = i * 4;
+      out[o] = Math.min(255, Math.abs(a[o] - b[o]) * 4);
+      out[o + 1] = Math.min(255, Math.abs(a[o + 1] - b[o + 1]) * 4);
+      out[o + 2] = Math.min(255, Math.abs(a[o + 2] - b[o + 2]) * 4);
+      out[o + 3] = 255;
+    }
+    return out;
+  }
+  function fig(canvas, cap) {
+    var f = document.createElement("figure");
+    f.appendChild(canvas);
+    var c = document.createElement("figcaption"); c.textContent = cap; f.appendChild(c);
+    return f;
+  }
+
+  // Renders the hash probe into an off-screen target and compares every cell exactly.
+  function runHashProbe(gl, p) {
+    var made = makeProgram(gl, p.source);
+    if (!made.ok) return { ok: false, error: "probe shader failed to compile", log: made.log };
+    var w = p.w, h = p.h;
+    var target = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, target);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    var fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target, 0);
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(made.program);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    var px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fb); gl.deleteTexture(target);
+    var expected = b64(p.rgb), exact = 0, firstBad = null;
+    for (var j = 0; j < h; j++) {
+      for (var i = 0; i < w; i++) {
+        var q = (j * w + i) * 4, e = (j * w + i) * 3;
+        if (px[q] === expected[e] && px[q + 1] === expected[e + 1] && px[q + 2] === expected[e + 2]) exact++;
+        else if (!firstBad) firstBad = { x: i, y: j, gpu: [px[q], px[q + 1], px[q + 2]], cpu: [expected[e], expected[e + 1], expected[e + 2]] };
+      }
+    }
+    return { ok: exact === w * h, cells: w * h, exact: exact, firstMismatch: firstBad };
+  }
+
+  function loadFixtures(onFixtures) {
+    fetch("fixtures.json").then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(onFixtures).catch(function () {
+      setOverall("idle", "Waiting", "fixtures.json is not available next to this page.");
+      $("picker").hidden = false;
+      $("file").addEventListener("change", function () {
+        var f = $("file").files[0];
+        if (!f) return;
+        var reader = new FileReader();
+        reader.onload = function () {
+          try { $("picker").hidden = true; onFixtures(JSON.parse(reader.result)); }
+          catch (e) { setOverall("fail", "Error", "That file is not valid fixtures JSON: " + e.message); }
+        };
+        reader.readAsText(f);
+      });
+    });
+  }
+
+  async function run(fix) {
+    var W = fix.width, H = fix.height, N = W * H;
+    var canvas = document.createElement("canvas");
+    canvas.width = W; canvas.height = H;
+    var gl = canvas.getContext("webgl2", { antialias: false, alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: true });
+    var result = { sdkVersion: fix.sdk_version, finishedAt: new Date().toISOString(), userAgent: navigator.userAgent, limits: LIMITS, scenarios: [] };
+    var finish = function (verdict, label, text) {
+      result.verdict = verdict;
+      setOverall(verdict, label, text);
+      $("raw").textContent = JSON.stringify(result, null, 1);
+      window.__MP_RESULT = result;
+      $("actions").hidden = false;
+    };
+    if (!gl) { finish("fail", "No WebGL2", "This browser cannot create a WebGL2 context, so the shader could not run."); return; }
+
+    var dbg = gl.getExtension("WEBGL_debug_renderer_info");
+    var linearExt = gl.getExtension("OES_texture_float_linear");
+    var hp = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT);
+    var hi = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_INT);
+    result.gl = {
+      renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+      vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+      version: gl.getParameter(gl.VERSION), glsl: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+      floatLinear: !!linearExt,
+      highpFloat: hp ? hp.precision + " bits, range 2^" + hp.rangeMax : "n/a",
+      highpInt: hi ? "range 2^" + hi.rangeMax : "n/a",
+      maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE)
+    };
+    kv($("gpuInfo"), [
+      ["renderer", String(result.gl.renderer)], ["vendor", String(result.gl.vendor)], ["context", String(result.gl.version)],
+      ["GLSL", String(result.gl.glsl)], ["highp float", result.gl.highpFloat], ["highp int", result.gl.highpInt],
+      ["float mask filtering", linearExt ? "linear (OES_texture_float_linear)" : "nearest only (extension missing)"],
+      ["max texture", String(result.gl.maxTextureSize)]
+    ]);
+    setOverall("idle", "Running", "Compiling shader");
+
+    var made = makeProgram(gl, buildFragment(fix.shader));
+    $("compileLog").textContent = made.log;
+    result.compile = { ok: made.ok, log: made.log.slice(0, 6000) };
+    if (!made.ok) {
+      $("compileChip").className = "chip fail"; $("compileChip").textContent = "Compile failed";
+      $("compileText").textContent = "The generated shader was rejected by this GPU's compiler.";
+      finish("fail", "Compile failed", "The generated shader does not compile on this GPU.");
+      return;
+    }
+    $("compileChip").className = "chip pass"; $("compileChip").textContent = "Compiled";
+    $("compileText").textContent = fix.shader.length + " generated lines, GLSL ES 3.00." + (/warning/i.test(made.log) ? " The compiler reported warnings; see the log." : "");
+
+    // Integer hash first: it must be bit-exact on every device.
+    try {
+      result.hashProbe = runHashProbe(gl, fix.hash_probe);
+    } catch (e) {
+      result.hashProbe = { ok: false, error: String((e && e.message) || e) };
+    }
+    var hp2 = result.hashProbe, box = $("probe");
+    box.textContent = "";
+    var line = document.createElement("div"); line.className = "verdict";
+    var chip = document.createElement("span"); chip.className = "chip " + (hp2.ok ? "pass" : "fail"); chip.textContent = hp2.ok ? "Exact" : "Mismatch";
+    var txt = document.createElement("span"); txt.className = "mono";
+    txt.textContent = hp2.error ? hp2.error : (hp2.exact + " of " + hp2.cells + " cells identical" + (hp2.firstMismatch ? "; first difference at cell (" + hp2.firstMismatch.x + ", " + hp2.firstMismatch.y + ") GPU " + hp2.firstMismatch.gpu.join(",") + " CPU " + hp2.firstMismatch.cpu.join(",") : ""));
+    line.appendChild(chip); line.appendChild(txt); box.appendChild(line);
+
+    gl.useProgram(made.program);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, W, H);
+    gl.bindVertexArray(gl.createVertexArray());
+    var loc = function (n) { return gl.getUniformLocation(made.program, n); };
+    var f1 = function (n, v) { var l = loc(n); if (l) gl.uniform1f(l, v); };
+    var f4 = function (n, a) { var l = loc(n); if (l) gl.uniform4f(l, a[0], a[1], a[2], a[3]); };
+
+    var camTex = tex2d(gl, 0, gl.RGBA8, W, H, gl.RGBA, gl.UNSIGNED_BYTE, b64(fix.camera), true, false);
+    var bgTex = {};
+    Object.keys(fix.bg).forEach(function (id) {
+      var b = fix.bg[id];
+      // Backgrounds are stored bottom row first, the orientation the shader samples them in.
+      bgTex[id] = tex2d(gl, 2, gl.RGBA8, b.w, b.h, gl.RGBA, gl.UNSIGNED_BYTE, b64(b.rgba), true, true);
+    });
+    // camera_image_transform maps bottom-left screen UV to the top-first camera image.
+    gl.uniformMatrix4fv(loc("camera_image_transform"), false, new Float32Array([1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1]));
+    var lv = loc("ar_viewport_size"); if (lv) gl.uniform3f(lv, W, H, 1);
+    [["camera_texture", 0], ["mp_person_mask", 1], ["mp_current_background", 2], ["mp_next_background", 3]].forEach(function (p) {
+      var l = loc(p[0]); if (l) gl.uniform1i(l, p[1]);
+    });
+
+    var rows = $("rows"), counts = { pass: 0, warn: 0, fail: 0 }, worst = { mae: 0, name: "" };
+    var glPixels = new Uint8Array(N * 4);
+    for (var si = 0; si < fix.scenarios.length; si++) {
+      var s = fix.scenarios[si], u = s.uniforms;
+      var maskTex = tex2d(gl, 1, gl.R32F, s.mask_w, s.mask_h, gl.RED, gl.FLOAT, new Float32Array(b64(s.mask).buffer), !!linearExt, false);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, camTex);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, maskTex);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, bgTex[s.current_bg ? String(s.current_bg) : "1"]);
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, bgTex[String(s.next_bg > 0 ? s.next_bg : 1)]);
+      f1("mp_effect_enable", u.effect_enable); f1("mp_progress", u.progress); f1("mp_reveal", u.reveal);
+      f1("mp_ring_scale", u.ring_scale); f1("mp_ring_alpha", u.ring_alpha); f1("mp_spin_turns", u.spin_turns);
+      f1("mp_person_visibility", u.person_visibility); f1("mp_use_camera_old", u.use_camera_old);
+      f4("mp_person_bounds", u.person_bounds); f4("mp_mask_crop", u.mask_crop);
+      f4("mp_style_a", u.style_a); f4("mp_style_b", u.style_b); f4("mp_warm", u.warm); f4("mp_cool", u.cool);
+      gl.clearColor(1, 0, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      var err = gl.getError();
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, glPixels);
+      gl.deleteTexture(maskTex);
+
+      var cpu = b64(s.cpu);                      // top row first
+      var gpu = flipRows(glPixels, W, H);        // read-back is bottom row first
+      var st = stats(cpu, gpu, N), g = grade(st);
+      counts[g]++;
+      if (st.mae > worst.mae) worst = { mae: st.mae, name: s.name };
+      result.scenarios.push({ name: s.name, phase: s.phase, effect: s.effect_enable, visibility: u.person_visibility, reveal: u.reveal,
+        ring_alpha: u.ring_alpha, mae: +st.mae.toFixed(3), p99: st.p99, max: st.max, over8: +st.over8.toFixed(4), over24: +st.over24.toFixed(4), grade: g, glError: err });
+
+      var row = document.createElement("div"); row.className = "run";
+      var meta = document.createElement("div"); meta.className = "meta";
+      var top = document.createElement("div");
+      var c = document.createElement("span"); c.className = "chip " + g; c.textContent = g.toUpperCase();
+      var nm = document.createElement("span"); nm.className = "name"; nm.textContent = " " + s.name;
+      top.appendChild(c); top.appendChild(nm);
+      var nums = document.createElement("div"); nums.className = "nums";
+      nums.textContent = "mae " + st.mae.toFixed(2) + "  p99 " + st.p99 + "  max " + st.max + "  >8 " + (st.over8 * 100).toFixed(1) + "%  >24 " + (st.over24 * 100).toFixed(1) + "%  |  vis " +
+        u.person_visibility.toFixed(2) + " reveal " + u.reveal.toFixed(2) + " ring " + u.ring_alpha.toFixed(2);
+      meta.appendChild(top); meta.appendChild(nums);
+      var th = document.createElement("div"); th.className = "thumbs";
+      th.appendChild(fig(thumb(W, H, cpu), "CPU")); th.appendChild(fig(thumb(W, H, gpu), "GPU")); th.appendChild(fig(thumb(W, H, diffImage(cpu, gpu, N)), "Diff"));
+      row.appendChild(meta); row.appendChild(th); rows.appendChild(row);
+      await new Promise(function (r) { setTimeout(r, 0); });
+    }
+    result.counts = counts; result.worst = worst;
+    var total = fix.scenarios.length;
+    var verdict = (counts.fail || !hp2.ok) ? "fail" : (counts.warn ? "warn" : "pass");
+    var text = counts.pass + " of " + total + " frames pass, " + counts.warn + " warn, " + counts.fail + " fail. Worst mean error " + worst.mae.toFixed(2) + " (" + worst.name + "). Hash " + (hp2.ok ? "exact" : "MISMATCH") + ".";
+    finish(verdict, verdict === "pass" ? "Pass" : (verdict === "warn" ? "Warnings" : "Failures"), text);
+  }
+
+  $("copy").addEventListener("click", function () {
+    var text = JSON.stringify(window.__MP_RESULT, null, 1);
+    var done = function (ok) { $("status").textContent = ok ? "Result JSON copied." : "Copy was blocked; use Download or select the raw JSON below."; };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+    else done(false);
+  });
+  $("download").addEventListener("click", function () {
+    var blob = new Blob([JSON.stringify(window.__MP_RESULT, null, 1)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "shader_parity_result.json";
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+
+  loadFixtures(function (fix) { run(fix).catch(function (e) { setOverall("fail", "Error", "The check stopped: " + ((e && e.message) || e)); }); });
+})();
+</script>
+</body>
+</html>
